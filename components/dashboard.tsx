@@ -17,6 +17,7 @@ import {
   Thermometer,
   Leaf,
 } from "lucide-react"
+import InteractiveMap from "@/components/InteractiveMap"
 
 const stats = [
   {
@@ -205,20 +206,8 @@ export function Dashboard() {
               ))}
             </div>
 
-            {/* Map Placeholder with Loading State */}
-            <div className="aspect-video bg-gradient-to-br from-emerald-50 to-green-50 rounded-xl border-2 border-dashed border-emerald-200 flex flex-col items-center justify-center">
-              <div className="text-center space-y-3">
-                <div className="w-16 h-16 bg-emerald-600 rounded-full flex items-center justify-center">
-                  <Zap className="w-8 h-8 text-white animate-pulse" />
-                </div>
-                <div>
-                  <h3 className="font-semibold text-emerald-800">Interactive Map Loading</h3>
-                  <p className="text-sm text-emerald-600 mt-1">
-                    Continental satellite view with multi-layer environmental data
-                  </p>
-                </div>
-              </div>
-            </div>
+            {/* Interactive Map Component */}
+            <InteractiveMap />
           </CardContent>
         </Card>
 

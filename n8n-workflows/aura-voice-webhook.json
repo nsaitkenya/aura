@@ -1,0 +1,340 @@
+{
+  "name": "AURA Voice Command Handler",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "aura-voice-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "name": "Voice Command Webhook",
+      "webhookId": "aura-voice-commands"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[\"workflowType\"]}}",
+              "operation": "equal",
+              "value2": "show_temperature"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [460, 200],
+      "name": "Temperature Command"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[\"workflowType\"]}}",
+              "operation": "equal",
+              "value2": "run_analysis"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [460, 300],
+      "name": "Analysis Command"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[\"workflowType\"]}}",
+              "operation": "equal",
+              "value2": "analyze_crop_health"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [460, 400],
+      "name": "Crop Health Command"
+    },
+    {
+      "parameters": {
+        "url": "={{$env.VAPI_API_URL}}/assistant/{{$env.VAPI_ENVIRONMENTAL_ASSISTANT_ID}}/speak",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{$env.VAPI_API_KEY}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "message",
+              "value": "Current temperature data shows {{$json[\"data\"][\"temperature\"] || '28°C'}}. The satellite imagery indicates {{$json[\"data\"][\"temperatureStatus\"] || 'normal temperature patterns'}} for this time of year in your monitoring region. Based on the thermal analysis, this is {{$json[\"data\"][\"recommendation\"] || 'within optimal range for crop growth'}}."
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [680, 200],
+      "name": "Temperature Response"
+    },
+    {
+      "parameters": {
+        "url": "={{$env.VAPI_API_URL}}/assistant/{{$env.VAPI_ENVIRONMENTAL_ASSISTANT_ID}}/speak",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{$env.VAPI_API_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "message",
+              "value": "Running {{$json[\"data\"][\"analysisType\"] || 'environmental'}} analysis on the satellite data. The analysis shows {{$json[\"data\"][\"results\"] || 'processing current environmental conditions'}}. I recommend {{$json[\"data\"][\"recommendation\"] || 'monitoring the trends over the next few days'}}."
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [680, 300],
+      "name": "Analysis Response"
+    },
+    {
+      "parameters": {
+        "url": "={{$env.VAPI_API_URL}}/assistant/{{$env.VAPI_MAPPING_ASSISTANT_ID}}/speak",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{$env.VAPI_API_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "message",
+              "value": "Analyzing crop health using satellite NDVI data. The vegetation index shows {{$json[\"data\"][\"ndvi\"] || '0.72 average NDVI'}} which indicates {{$json[\"data\"][\"healthStatus\"] || 'healthy crop conditions'}}. {{$json[\"data\"][\"cropRecommendation\"] || 'Continue current management practices and monitor for any changes'}}."
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [680, 400],
+      "name": "Crop Health Response"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"status\": \"success\", \"message\": \"Voice command processed\", \"timestamp\": \"{{new Date().toISOString()}}\", \"command\": \"{{$json.workflowType}}\"}"
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [900, 300],
+      "name": "Success Response"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[\"workflowType\"]}}",
+              "operation": "equal",
+              "value2": "general_query"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [460, 500],
+      "name": "General Query"
+    },
+    {
+      "parameters": {
+        "url": "={{$env.VAPI_API_URL}}/assistant/{{$env.VAPI_GENERAL_ASSISTANT_ID}}/speak",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{$env.VAPI_API_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "message",
+              "value": "I understand you're asking about {{$json[\"data\"][\"query\"] || 'environmental data'}}. Based on the current {{$json[\"page\"]}} context and available satellite information, {{$json[\"data\"][\"aiResponse\"] || 'let me help you understand the environmental patterns we are monitoring'}}."
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [680, 500],
+      "name": "General AI Response"
+    }
+  ],
+  "connections": {
+    "Voice Command Webhook": {
+      "main": [
+        [
+          {
+            "node": "Temperature Command",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Analysis Command",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Crop Health Command",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "General Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Temperature Command": {
+      "main": [
+        [
+          {
+            "node": "Temperature Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analysis Command": {
+      "main": [
+        [
+          {
+            "node": "Analysis Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Crop Health Command": {
+      "main": [
+        [
+          {
+            "node": "Crop Health Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Temperature Response": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analysis Response": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Crop Health Response": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "General Query": {
+      "main": [
+        [
+          {
+            "node": "General AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "General AI Response": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": ["aura", "voice", "environmental"],
+  "triggerCount": 1,
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "versionId": "1"
+}

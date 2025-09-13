@@ -1,31 +1,56 @@
 "use client"
 
-import { useState } from "react"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Progress } from "@/components/ui/progress"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { useState, useEffect, useRef } from "react"
 import {
-  Camera,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Progress } from "@/components/ui/progress"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
+  TreePine,
   Droplets,
-  TrendingUp,
-  DollarSign,
-  Calendar,
   Thermometer,
-  Cloud,
-  Sprout,
-  Bug,
+  Wind,
+  MapPin, 
+  TrendingUp, 
+  TrendingDown,
   Leaf,
-  MapPin,
   Upload,
   Scan,
   AlertTriangle,
   Clock,
   BarChart3,
+  Satellite,
+  Loader2,
+  CloudRain,
+  Sprout,
+  DollarSign,
+  Calendar,
+  Camera,
+  Bug,
+  Cloud
+
 } from "lucide-react"
+import { earthEngineAuth } from "@/lib/earthEngineAuth"
+import { mapService } from "@/lib/mapService"
+import { CountrySearch } from "@/components/CountrySearch"
+import { africanCountries, getCountryAgriculturalData } from "@/lib/countryData"
+import { geminiService } from "@/lib/geminiService"
 
 const farmStats = [
   {
@@ -83,9 +108,293 @@ const farmTasks = [
   { task: "Harvest - Bean Field", priority: "high", due: "3 days", status: "scheduled" },
 ]
 
-export function AgricultureHub() {
-  const [selectedCrop, setSelectedCrop] = useState("maize")
-  const [scanResult, setScanResult] = useState<any>(null)
+interface FieldData {
+  lat: number;
+  lng: number;
+  value: any;
+  analysisType: string;
+}
+
+interface AnalysisResult {
+  type: string;
+  data: any;
+  timestamp: string;
+}
+
+interface ScanResult {
+  disease: string;
+  confidence: number;
+  severity: string;
+  treatment: string;
+  prevention: string;
+}
+
+export default function AgricultureHub() {
+  const mapRef = useRef<HTMLDivElement>(null);
+  const [mapInstance, setMapInstance] = useState<any>(null);
+  const [mapProvider, setMapProvider] = useState<string>('google');
+  const [isEEReady, setIsEEReady] = useState(false);
+  const [cropAnalysis, setCropAnalysis] = useState('ndvi');
+  const [fieldData, setFieldData] = useState<FieldData | null>(null);
+  // const [fieldData, setFieldData] = useState<FieldData | null>(null);
+  const [selectedField, setSelectedField] = useState<any>(null);
+  const [selectedCountry, setSelectedCountry] = useState<any>(null);
+  const [cropFilters, setCropFilters] = useState<Record<string, boolean>>({
+    ndvi: true,
+    moisture: false,
+    temperature: false,
+    rainfall: false,
+    cropHealth: false
+  });
+  const [selectedCrop, setSelectedCrop] = useState("maize");
+  const [analysisResults, setAnalysisResults] = useState<AnalysisResult | null>(null);
+  const [geminiAnalysis, setGeminiAnalysis] = useState<string>('');
+  const [geminiLoading, setGeminiLoading] = useState(false);
+  const [showGeminiPanel, setShowGeminiPanel] = useState(false);
+  const [cropQuestion, setCropQuestion] = useState('');
+  const [currentOverlay, setCurrentOverlay] = useState<any>(null);
+  const [activeFilters, setActiveFilters] = useState<string[]>([]);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [scanResult, setScanResult] = useState<ScanResult | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    initializeEarthEngine();
+  }, []);
+
+  useEffect(() => {
+    // Initialize map regardless of Earth Engine status
+    initializeAgricultureMap();
+  }, [isEEReady, selectedCountry]);
+
+  const handleCountrySelect = (country: any) => {
+    setSelectedCountry(country);
+    const agriData = getCountryAgriculturalData(country.code);
+    if (agriData) {
+      // Update crop types display based on country
+      console.log('Selected country crops:', agriData.cropTypes);
+    }
+  };
+
+  const toggleCropFilter = (filter: string) => {
+    setCropFilters(prev => {
+      const newFilters = {
+        ndvi: false,
+        moisture: false,
+        temperature: false,
+        rainfall: false,
+        cropHealth: false
+      };
+      newFilters[filter as keyof typeof newFilters] = !prev[filter as keyof typeof prev];
+      return newFilters;
+    });
+    
+    // Update active analysis based on filter
+    const filterToAnalysis: Record<string, string> = {
+      ndvi: 'ndvi',
+      moisture: 'soil_moisture',
+      temperature: 'temperature',
+      rainfall: 'precipitation',
+      cropHealth: 'crop_health'
+    };
+    
+    const newAnalysis = filterToAnalysis[filter] || 'ndvi';
+    setCropAnalysis(newAnalysis);
+    
+    if (mapInstance && isEEReady && window.ee) {
+      runCropAnalysis(mapInstance, newAnalysis);
+    }
+  };
+
+  const initializeEarthEngine = async () => {
+    try {
+      setLoading(true);
+      await earthEngineAuth.authenticate();
+      setIsEEReady(true);
+      setLoading(false);
+    } catch (error) {
+      console.error('Earth Engine authentication failed:', error);
+      setLoading(false);
+      setIsEEReady(false);
+    }
+  };
+
+  const initializeAgricultureMap = async () => {
+    if (!mapRef.current) return;
+
+    try {
+      console.log('Initializing agriculture map...');
+      const center = selectedCountry ? selectedCountry.coordinates : { lat: -0.0236, lng: 37.9062 };
+      const zoom = selectedCountry ? 7 : 5;
+      
+      const mapResult = await mapService.initializeMap(mapRef.current, {
+        center,
+        zoom,
+        mapTypeId: 'satellite'
+      });
+
+      console.log('Map initialized:', mapResult);
+      setMapInstance(mapResult.map);
+      setMapProvider(mapResult.provider);
+      
+      // Add field click handler
+      if (mapResult.provider === 'google') {
+        mapResult.map.addListener('click', (event: any) => {
+          handleFieldClick(event.latLng.lat(), event.latLng.lng());
+        });
+      }
+      
+      // Run analysis if Earth Engine is ready
+      if (isEEReady && window.ee) {
+        runCropAnalysis(mapResult.map, cropAnalysis);
+      }
+    } catch (error) {
+      console.error('Failed to initialize agriculture map:', error);
+    }
+  };
+
+  const runCropAnalysis = async (map: any, analysisType: string) => {
+    if (!isEEReady || !map) return;
+
+    try {
+      setAnalysisLoading(true);
+      const bounds = map.getBounds();
+      
+      const boundsObj = {
+        north: bounds.getNorth(),
+        south: bounds.getSouth(),
+        east: bounds.getEast(),
+        west: bounds.getWest()
+      };
+
+      // Get Earth Engine analysis
+      const analysis = await earthEngineAuth.getCropAnalysis(boundsObj, analysisType);
+      
+      if (analysis && analysis.mapid) {
+        // Remove existing overlay
+        if (currentOverlay) {
+          map.overlayMapTypes.removeAt(0);
+        }
+
+        // Add new overlay
+        const imageMapType = new (window as any).google.maps.ImageMapType({
+          getTileUrl: (coord: any, zoom: number) => {
+            return `https://earthengine.googleapis.com/v1alpha/projects/earthengine-legacy/maps/${analysis.mapid}/tiles/${zoom}/${coord.x}/${coord.y}?token=${analysis.token}`;
+          },
+          tileSize: new (window as any).google.maps.Size(256, 256),
+          name: analysisType,
+          opacity: 0.7
+        });
+
+        map.overlayMapTypes.insertAt(0, imageMapType);
+        setCurrentOverlay(imageMapType);
+        
+        // Trigger Gemini analysis for crop recommendations
+        await runGeminiCropAnalysis(analysisType, boundsObj);
+      }
+    } catch (error) {
+      console.error('Crop analysis failed:', error);
+    } finally {
+      setAnalysisLoading(false);
+    }
+  };
+
+  const runGeminiCropAnalysis = async (analysisType: string, bounds: any) => {
+    try {
+      setGeminiLoading(true);
+      
+      const cropData = {
+        ndvi: analysisType === 'ndvi' ? '0.65' : 'N/A',
+        soilMoisture: analysisType === 'soil_moisture' ? '0.35' : 'N/A',
+        temperature: analysisType === 'temperature' ? '28.5' : 'N/A',
+        precipitation: analysisType === 'precipitation' ? '850' : 'N/A',
+        airQuality: 'Moderate',
+        waterQuality: '78%'
+      };
+      
+      const location = selectedCountry ? selectedCountry.name : 'Kenya';
+      const cropType = selectedCrop || 'maize';
+      
+      const analysis = await geminiService.analyzeCropData(cropData, location, cropType);
+      setGeminiAnalysis(typeof analysis === 'string' ? analysis : JSON.stringify(analysis, null, 2));
+      setShowGeminiPanel(true);
+    } catch (error) {
+      console.error('Gemini analysis failed:', error);
+      setGeminiAnalysis('Failed to get AI analysis. Please try again.');
+    } finally {
+      setGeminiLoading(false);
+    }
+  };
+
+  const askGeminiQuestion = async () => {
+    if (!cropQuestion.trim()) return;
+    
+    try {
+      setGeminiLoading(true);
+      const location = selectedCountry ? selectedCountry.name : 'Kenya';
+      const season = 'Current';
+      const soilType = 'Loamy';
+      const cropType = selectedCrop || 'general farming';
+      
+      const response = await geminiService.getCropRecommendations(location, season, soilType, cropType);
+      setGeminiAnalysis(response);
+      setShowGeminiPanel(true);
+      setCropQuestion('');
+    } catch (error) {
+      console.error('Gemini question failed:', error);
+      setGeminiAnalysis('Failed to get AI response. Please try again.');
+    } finally {
+      setGeminiLoading(false);
+    }
+  };
+
+  const handleFieldClick = async (lat: number, lng: number) => {
+    try {
+      const point = window.ee.Geometry.Point([lng, lat]);
+      
+      // Get the current analysis image
+      let currentImage;
+      if (!mapInstance) {
+        // Recreate the current analysis if map not provided
+        const sentinel2 = window.ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+          .filterDate('2024-01-01', '2024-12-31')
+          .filterBounds(point)
+          .filter(window.ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20));
+        
+        if (cropAnalysis === 'ndvi') {
+          const addNDVI = (img: any) => {
+            const ndvi = img.normalizedDifference(['B8', 'B4']).rename('NDVI');
+            return img.addBands(ndvi);
+          };
+          currentImage = sentinel2.map(addNDVI).select('NDVI').mean();
+        }
+      } else {
+        currentImage = mapInstance;
+      }
+      
+      const value = currentImage.sample(point, 30);
+      
+      value.evaluate((result: any, error: any) => {
+        if (!error && result.features.length > 0) {
+          setFieldData({
+            lat: lat,
+            lng: lng,
+            value: result.features[0].properties,
+            analysisType: cropAnalysis
+          });
+        }
+      });
+    } catch (error) {
+      console.error('Field analysis error:', error);
+    }
+  };
+
+  const analysisTypes = [
+    { key: 'ndvi', label: 'Vegetation Health', description: 'NDVI analysis for crop vigor' },
+    { key: 'moisture', label: 'Soil Moisture', description: 'Water content monitoring' },
+    { key: 'temperature', label: 'Temperature', description: 'Heat stress detection' },
+    { key: 'rainfall', label: 'Precipitation', description: 'Rainfall patterns' }
+  ];
 
   const handleImageScan = () => {
     // Simulate AI crop analysis
@@ -95,18 +404,22 @@ export function AgricultureHub() {
       severity: "Moderate",
       treatment: "Apply fungicide within 48 hours. Remove affected leaves.",
       prevention: "Ensure proper spacing and avoid overhead watering.",
-    })
-  }
+    });
+  };
+
 
   return (
     <div className="p-6 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-foreground">Agriculture Hub</h1>
-          <p className="text-muted-foreground mt-1">Precision farming tools and crop management</p>
+          <h1 className="text-3xl font-bold text-foreground">Agriculture Intelligence Hub</h1>
+          <p className="text-muted-foreground mt-1">Satellite-based crop monitoring and precision agriculture</p>
         </div>
         <div className="flex items-center space-x-2">
+          <Badge className="bg-green-100 text-green-700">
+            {isEEReady ? "Monitoring Active" : "Initializing..."}
+          </Badge>
           <Button variant="outline">
             <Calendar className="w-4 h-4 mr-2" />
             Farm Calendar
@@ -148,77 +461,182 @@ export function AgricultureHub() {
         </TabsList>
 
         <TabsContent value="dashboard" className="space-y-6">
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Farm Map */}
-            <Card className="lg:col-span-2">
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+            {/* Satellite Map */}
+            <Card className="lg:col-span-3">
               <CardHeader>
-                <CardTitle className="flex items-center">
-                  <MapPin className="w-5 h-5 mr-2" />
-                  Interactive Farm Map
+                <CardTitle className="flex items-center justify-between">
+                  <span className="flex items-center">
+                    <Satellite className="w-5 h-5 mr-2" />
+                    Crop Monitoring Map
+                  </span>
+                  <div className="flex items-center space-x-2">
+                    {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+                    <Badge variant={isEEReady ? "default" : "secondary"}>
+                      {isEEReady ? "Earth Engine Ready" : "Loading..."}
+                    </Badge>
+                  </div>
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="aspect-video bg-muted rounded-lg relative overflow-hidden">
-                  <div className="absolute inset-0 bg-gradient-to-br from-green-50 to-yellow-50 dark:from-green-900/20 dark:to-yellow-900/20">
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="text-center">
-                        <MapPin className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-                        <p className="text-lg font-medium text-muted-foreground">Farm Layout</p>
-                        <p className="text-sm text-muted-foreground mt-2">Field boundaries and crop zones</p>
-                      </div>
+                <div 
+                  ref={mapRef} 
+                  className="w-full h-96 rounded-lg border bg-gray-100"
+                  style={{ minHeight: '400px' }}
+                />
+                
+                {/* Gemini AI Analysis Panel */}
+                {showGeminiPanel && (
+                  <div className="mt-4 p-4 border rounded-lg bg-blue-50">
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="font-medium flex items-center">
+                        🤖 AI Crop Analysis
+                        {geminiLoading && <Loader2 className="h-4 w-4 animate-spin ml-2" />}
+                      </h4>
+                      <Button
+                        onClick={() => setShowGeminiPanel(false)}
+                        variant="ghost"
+                        size="sm"
+                      >
+                        ×
+                      </Button>
+                    </div>
+                    <div className="max-h-64 overflow-y-auto">
+                      <pre className="whitespace-pre-wrap text-sm text-gray-700">
+                        {geminiAnalysis || 'No analysis available. Run a crop analysis or ask a question to get AI recommendations.'}
+                      </pre>
                     </div>
                   </div>
-
-                  {/* Field Labels */}
-                  <div className="absolute top-4 left-4">
-                    <Badge className="bg-green-500 text-white">Maize Field A</Badge>
-                  </div>
-                  <div className="absolute top-4 right-4">
-                    <Badge className="bg-yellow-500 text-white">Cassava Field B</Badge>
-                  </div>
-                  <div className="absolute bottom-4 left-4">
-                    <Badge className="bg-blue-500 text-white">Bean Field C</Badge>
-                  </div>
-                  <div className="absolute bottom-4 right-4">
-                    <Badge className="bg-red-500 text-white">Tomato Field D</Badge>
-                  </div>
-                </div>
+                )}
               </CardContent>
             </Card>
 
-            {/* Crop Health Overview */}
-            <Card>
+            {/* Analysis Controls */}
+            <Card className="lg:col-span-1">
               <CardHeader>
-                <CardTitle className="flex items-center">
-                  <Leaf className="w-5 h-5 mr-2" />
-                  Crop Health Status
-                </CardTitle>
+                <CardTitle className="text-sm">Crop Analysis Controls</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                {cropHealth.map((crop) => (
-                  <div key={crop.crop} className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="font-medium text-sm">{crop.crop}</span>
-                      <div className="flex items-center space-x-2">
-                        <Badge
-                          variant={crop.health >= 90 ? "default" : crop.health >= 75 ? "secondary" : "destructive"}
+                {/* Country Search */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Search Location</label>
+                  <CountrySearch 
+                    onCountrySelect={handleCountrySelect}
+                    placeholder="Search African countries..."
+                    showDetails={false}
+                  />
+                </div>
+
+                {/* Crop Data Filters */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Crop Data Layers</label>
+                  <div className="space-y-2">
+                    {[
+                      { id: 'ndvi', label: 'NDVI', icon: Leaf },
+                      { id: 'soil_moisture', label: 'Soil Moisture', icon: Droplets },
+                      { id: 'temperature', label: 'Temperature', icon: Thermometer },
+                      { id: 'precipitation', label: 'Rainfall', icon: CloudRain },
+                      { id: 'crop_health', label: 'Crop Health', icon: Sprout }
+                    ].map((filter) => (
+                      <div key={filter.id} className="flex items-center space-x-2">
+                        <input
+                          type="checkbox"
+                          id={filter.id}
+                          checked={cropFilters[filter.id as keyof typeof cropFilters]}
+                          onChange={() => toggleCropFilter(filter.id)}
+                          className="rounded border-gray-300"
+                        />
+                        <label
+                          htmlFor={filter.id}
+                          className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 flex items-center space-x-2"
                         >
-                          {crop.status}
-                        </Badge>
-                        {crop.issues > 0 && (
-                          <Badge variant="destructive" className="text-xs">
-                            {crop.issues} issues
-                          </Badge>
-                        )}
+                          <filter.icon className="h-4 w-4" />
+                          <span>{filter.label}</span>
+                        </label>
                       </div>
-                    </div>
-                    <Progress value={crop.health} className="h-2" />
-                    <div className="flex justify-between text-xs text-muted-foreground">
-                      <span>{crop.health}% healthy</span>
-                      <span>{crop.area}</span>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Country Crop Types */}
+                {selectedCountry && (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Main Crops in {selectedCountry.name}</label>
+                    <div className="flex flex-wrap gap-1">
+                      {selectedCountry.cropTypes?.map((crop: string) => (
+                        <Badge key={crop} variant="secondary" className="text-xs">
+                          {crop}
+                        </Badge>
+                      ))}
                     </div>
                   </div>
+                )}
+                {analysisTypes.map((type) => (
+                  <Button
+                    key={type.key}
+                    variant={cropAnalysis === type.key ? "default" : "outline"}
+                    className="w-full text-left justify-start"
+                    onClick={() => {
+                      setCropAnalysis(type.key);
+                      if (mapInstance) {
+                        runCropAnalysis(mapInstance, type.key);
+                      }
+                    }}
+                  >
+                    <div className="text-left">
+                      <div className="font-medium text-sm">{type.label}</div>
+                      <div className="text-xs text-muted-foreground">{type.description}</div>
+                    </div>
+                  </Button>
                 ))}
+                
+                {/* Field Click Results */}
+                {fieldData && (
+                  <Card className="mt-4">
+                    <CardHeader>
+                      <CardTitle className="text-sm">Field Analysis</CardTitle>
+                    </CardHeader>
+                    <CardContent className="text-xs">
+                      <p><strong>Location:</strong> {fieldData.lat.toFixed(4)}, {fieldData.lng.toFixed(4)}</p>
+                      <p><strong>Analysis:</strong> {fieldData.analysisType}</p>
+                      <pre className="mt-2 bg-gray-100 p-2 rounded text-xs overflow-auto">
+                        {JSON.stringify(fieldData.value, null, 1)}
+                      </pre>
+                    </CardContent>
+                  </Card>
+                )}
+                
+                {/* AI Crop Analysis */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">🤖 AI Crop Assistant</label>
+                  <div className="space-y-2">
+                    <div className="flex space-x-2">
+                      <input
+                        type="text"
+                        placeholder="Ask about crop recommendations..."
+                        value={cropQuestion}
+                        onChange={(e) => setCropQuestion(e.target.value)}
+                        className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm"
+                        onKeyPress={(e) => e.key === 'Enter' && askGeminiQuestion()}
+                      />
+                      <Button
+                        onClick={askGeminiQuestion}
+                        disabled={geminiLoading || !cropQuestion.trim()}
+                        size="sm"
+                      >
+                        {geminiLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Ask AI'}
+                      </Button>
+                    </div>
+                    <Button
+                      onClick={() => setShowGeminiPanel(!showGeminiPanel)}
+                      variant="outline"
+                      size="sm"
+                      className="w-full"
+                    >
+                      {showGeminiPanel ? 'Hide' : 'Show'} AI Analysis
+                    </Button>
+                  </div>
+                </div>
               </CardContent>
             </Card>
           </div>
@@ -253,243 +671,66 @@ export function AgricultureHub() {
                     <Badge variant={task.status === "pending" ? "destructive" : "secondary"}>{task.status}</Badge>
                   </div>
                 ))}
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
+              </CardContent>
+            </Card>
+          </TabsContent>
 
-        <TabsContent value="scanner" className="space-y-6">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Image Upload */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center">
-                  <Camera className="w-5 h-5 mr-2" />
-                  Crop Health Scanner
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="border-2 border-dashed border-muted-foreground/25 rounded-lg p-8 text-center">
-                  <Camera className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-                  <p className="text-muted-foreground mb-4">Take a photo or upload an image of your crop</p>
-                  <div className="flex flex-col space-y-2">
-                    <Button className="w-full">
+          <TabsContent value="scanner" className="space-y-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center">
+                    <Camera className="w-5 h-5 mr-2" />
+                    AI Crop Scanner
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center">
+                    <Camera className="w-12 h-12 mx-auto text-gray-400 mb-4" />
+                    <p className="text-sm text-gray-600 mb-4">
+                      Upload or capture an image of your crop for AI analysis
+                    </p>
+                    <Button onClick={handleImageScan} className="mb-2">
                       <Camera className="w-4 h-4 mr-2" />
-                      Take Photo
-                    </Button>
-                    <Button variant="outline" className="w-full bg-transparent">
-                      <Upload className="w-4 h-4 mr-2" />
-                      Upload Image
+                      Scan Crop
                     </Button>
                   </div>
-                </div>
+                  
+                  {scanResult && (
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="text-sm">Analysis Results</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-2">
+                        <div className="flex justify-between">
+                          <span className="text-sm font-medium">Disease:</span>
+                          <span className="text-sm">{scanResult.disease}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-sm font-medium">Confidence:</span>
+                          <span className="text-sm">{scanResult.confidence}%</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-sm font-medium">Severity:</span>
+                          <span className="text-sm">{scanResult.severity}</span>
+                        </div>
+                        <div className="mt-3">
+                          <p className="text-sm font-medium">Treatment:</p>
+                          <p className="text-xs text-gray-600">{scanResult.treatment}</p>
+                        </div>
+                        <div className="mt-2">
+                          <p className="text-sm font-medium">Prevention:</p>
+                          <p className="text-xs text-gray-600">{scanResult.prevention}</p>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
 
-                <div className="space-y-3">
-                  <Label>Crop Type</Label>
-                  <Select value={selectedCrop} onValueChange={setSelectedCrop}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="maize">Maize</SelectItem>
-                      <SelectItem value="cassava">Cassava</SelectItem>
-                      <SelectItem value="beans">Beans</SelectItem>
-                      <SelectItem value="tomatoes">Tomatoes</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <Button onClick={handleImageScan} className="w-full">
-                  <Scan className="w-4 h-4 mr-2" />
-                  Analyze Crop Health
-                </Button>
-              </CardContent>
-            </Card>
-
-            {/* Scan Results */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center">
-                  <Bug className="w-5 h-5 mr-2" />
-                  Analysis Results
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                {scanResult ? (
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between p-3 bg-destructive/10 rounded-lg">
-                      <div className="flex items-center space-x-2">
-                        <AlertTriangle className="w-5 h-5 text-destructive" />
-                        <span className="font-medium">{scanResult.disease}</span>
-                      </div>
-                      <Badge variant="destructive">{scanResult.confidence}% confidence</Badge>
-                    </div>
-
-                    <div className="space-y-3">
-                      <div>
-                        <Label className="text-sm font-medium">Severity</Label>
-                        <p className="text-sm text-muted-foreground">{scanResult.severity}</p>
-                      </div>
-
-                      <div>
-                        <Label className="text-sm font-medium">Recommended Treatment</Label>
-                        <p className="text-sm text-muted-foreground">{scanResult.treatment}</p>
-                      </div>
-
-                      <div>
-                        <Label className="text-sm font-medium">Prevention</Label>
-                        <p className="text-sm text-muted-foreground">{scanResult.prevention}</p>
-                      </div>
-                    </div>
-
-                    <Button className="w-full">
-                      <Calendar className="w-4 h-4 mr-2" />
-                      Schedule Treatment
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="text-center py-8">
-                    <Scan className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-                    <p className="text-muted-foreground">Upload an image to get AI-powered crop analysis</p>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="irrigation" className="space-y-6">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center">
-                  <Droplets className="w-5 h-5 mr-2" />
-                  Smart Irrigation Optimizer
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="text-center p-3 bg-muted rounded-lg">
-                    <Thermometer className="w-6 h-6 mx-auto text-red-500 mb-2" />
-                    <p className="text-sm font-medium">Temperature</p>
-                    <p className="text-lg font-bold">28°C</p>
-                  </div>
-                  <div className="text-center p-3 bg-muted rounded-lg">
-                    <Cloud className="w-6 h-6 mx-auto text-blue-500 mb-2" />
-                    <p className="text-sm font-medium">Humidity</p>
-                    <p className="text-lg font-bold">65%</p>
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  <div>
-                    <Label>Soil Moisture Level</Label>
-                    <Progress value={45} className="mt-2" />
-                    <p className="text-xs text-muted-foreground mt-1">45% - Needs irrigation</p>
-                  </div>
-
-                  <div>
-                    <Label>Recommended Water Amount</Label>
-                    <div className="text-2xl font-bold text-primary">25mm</div>
-                    <p className="text-xs text-muted-foreground">Based on crop type, soil, and weather</p>
-                  </div>
-                </div>
-
-                <Button className="w-full">
-                  <Droplets className="w-4 h-4 mr-2" />
-                  Start Irrigation
-                </Button>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Irrigation Schedule</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between p-3 border rounded-lg">
-                    <div>
-                      <p className="font-medium text-sm">Maize Field A</p>
-                      <p className="text-xs text-muted-foreground">Next: Today 6:00 AM</p>
-                    </div>
-                    <Badge className="bg-blue-500">Active</Badge>
-                  </div>
-                  <div className="flex items-center justify-between p-3 border rounded-lg">
-                    <div>
-                      <p className="font-medium text-sm">Tomato Field D</p>
-                      <p className="text-xs text-muted-foreground">Next: Tomorrow 5:30 AM</p>
-                    </div>
-                    <Badge variant="secondary">Scheduled</Badge>
-                  </div>
-                  <div className="flex items-center justify-between p-3 border rounded-lg">
-                    <div>
-                      <p className="font-medium text-sm">Bean Field C</p>
-                      <p className="text-xs text-muted-foreground">Next: In 2 days</p>
-                    </div>
-                    <Badge variant="outline">Pending</Badge>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="predictions" className="space-y-6">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center">
-                  <TrendingUp className="w-5 h-5 mr-2" />
-                  Yield Predictions
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  {cropHealth.map((crop) => (
-                    <div key={crop.crop} className="flex items-center justify-between p-3 border rounded-lg">
-                      <div>
-                        <p className="font-medium text-sm">{crop.crop}</p>
-                        <p className="text-xs text-muted-foreground">{crop.area}</p>
-                      </div>
-                      <div className="text-right">
-                        <p className="font-bold text-sm">
-                          {crop.crop === "Maize"
-                            ? "4.2 tons"
-                            : crop.crop === "Cassava"
-                              ? "3.8 tons"
-                              : crop.crop === "Beans"
-                                ? "2.1 tons"
-                                : "2.2 tons"}
-                        </p>
-                        <p className="text-xs text-green-600">+8.5% vs last season</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center">
-                  <BarChart3 className="w-5 h-5 mr-2" />
-                  Harvest Timeline
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="aspect-video bg-muted rounded-lg flex items-center justify-center">
-                  <div className="text-center">
-                    <Calendar className="w-12 h-12 mx-auto text-muted-foreground mb-2" />
-                    <p className="text-sm text-muted-foreground">Harvest prediction timeline</p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="market" className="space-y-6">
+          <TabsContent value="market" className="space-y-6">
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center">
@@ -515,5 +756,5 @@ export function AgricultureHub() {
         </TabsContent>
       </Tabs>
     </div>
-  )
+  );
 }

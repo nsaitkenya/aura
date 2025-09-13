@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useRef, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -29,7 +29,13 @@ import {
   Eye,
   ThumbsUp,
   MessageCircle,
+  Satellite,
+  Loader2
 } from "lucide-react"
+import { CountrySearch } from "@/components/CountrySearch"
+import { mapService } from "@/lib/mapService"
+import { googleMapsService } from "@/lib/googleMapsService"
+import { africanCountries } from "@/lib/countryData"
 
 const communityStats = [
   {
@@ -165,9 +171,136 @@ const learningModules = [
 ]
 
 export function CommunityFeatures() {
+  const mapRef = useRef<HTMLDivElement>(null);
+  const [mapInstance, setMapInstance] = useState<any>(null);
+  const [mapProvider, setMapProvider] = useState<string>('google');
   const [reportType, setReportType] = useState("")
   const [reportDescription, setReportDescription] = useState("")
+  const [reportLocation, setReportLocation] = useState("")
+  const [selectedCountry, setSelectedCountry] = useState<any>(null);
   const [newPost, setNewPost] = useState("")
+  const [mapLoading, setMapLoading] = useState(true);
+
+  useEffect(() => {
+    initializeCommunityMap();
+    // Initialize Google Maps service
+    googleMapsService.initialize().catch(console.error);
+  }, [selectedCountry]);
+
+  const initializeCommunityMap = async () => {
+    if (!mapRef.current) return;
+
+    try {
+      setMapLoading(true);
+      const center = selectedCountry ? selectedCountry.coordinates : { lat: 0.0236, lng: 37.9062 };
+      const zoom = selectedCountry ? 8 : 4;
+      
+      const mapResult = await mapService.initializeMap(mapRef.current, {
+        center,
+        zoom,
+        mapTypeId: 'roadmap',
+        styles: [
+          {
+            featureType: 'all',
+            elementType: 'labels',
+            stylers: [{ visibility: 'on' }]
+          }
+        ]
+      });
+
+      // Load real community data
+      await loadCommunityData(mapResult.map, center);
+
+      setMapInstance(mapResult.map);
+      setMapProvider(mapResult.provider);
+      
+      // Add sample report markers
+      addCommunityReportMarkers(mapResult.map, mapResult.provider);
+      setMapLoading(false);
+    } catch (error) {
+      console.error('Failed to initialize community map:', error);
+      setMapLoading(false);
+    }
+  };
+
+  const loadCommunityData = async (map: any, location: any) => {
+    try {
+      const environmentalData = await googleMapsService.getEnvironmentalData(location);
+      
+      // Add community-relevant markers
+      if (environmentalData.nearbyFeatures) {
+        environmentalData.nearbyFeatures.forEach((feature: any) => {
+          if (feature.geometry?.location) {
+            const marker = new (window as any).google.maps.Marker({
+              position: feature.geometry.location,
+              map: map,
+              title: feature.name,
+              icon: {
+                url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
+                  <svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="10" cy="10" r="8" fill="#3b82f6" stroke="white" stroke-width="2"/>
+                  </svg>
+                `),
+                scaledSize: new (window as any).google.maps.Size(20, 20)
+              }
+            });
+            
+            const infoWindow = new (window as any).google.maps.InfoWindow({
+              content: `
+                <div style="padding: 10px;">
+                  <h3 style="margin: 0 0 5px 0; font-size: 14px;">${feature.name}</h3>
+                  <p style="margin: 0; font-size: 12px; color: #666;">${feature.vicinity || 'Community location'}</p>
+                  <p style="margin: 5px 0 0 0; font-size: 11px; color: #888;">Type: ${feature.types?.[0] || 'Community feature'}</p>
+                </div>
+              `
+            });
+            
+            marker.addListener('click', () => {
+              infoWindow.open(map, marker);
+            });
+          }
+        });
+      }
+    } catch (error) {
+      console.error('Error loading community data:', error);
+    }
+  };
+
+  const addCommunityReportMarkers = (map: any, provider: string) => {
+    const sampleReports = [
+      { lat: -1.2921, lng: 36.8219, type: 'pollution', severity: 'high' },
+      { lat: 6.5244, lng: 3.3792, type: 'deforestation', severity: 'critical' },
+      { lat: -33.9249, lng: 18.4241, type: 'waste', severity: 'medium' },
+      { lat: 5.6037, lng: -0.1870, type: 'wildlife', severity: 'low' }
+    ];
+
+    if (provider === 'google' && (window as any).google) {
+      sampleReports.forEach(report => {
+        const color = report.severity === 'critical' ? '#ef4444' : 
+                     report.severity === 'high' ? '#f97316' : 
+                     report.severity === 'medium' ? '#eab308' : '#22c55e';
+        
+        new (window as any).google.maps.Marker({
+          position: { lat: report.lat, lng: report.lng },
+          map: map,
+          title: `${report.type} - ${report.severity}`,
+          icon: {
+            path: (window as any).google.maps.SymbolPath.CIRCLE,
+            scale: 8,
+            fillColor: color,
+            fillOpacity: 0.8,
+            strokeColor: '#ffffff',
+            strokeWeight: 2
+          }
+        });
+      });
+    }
+  };
+
+  const handleCountrySelect = (country: any) => {
+    setSelectedCountry(country);
+    setReportLocation(`${country.name}`);
+  };
 
   const handleSubmitReport = () => {
     // Handle report submission
@@ -257,7 +390,12 @@ export function CommunityFeatures() {
                 <div className="space-y-3">
                   <Label>Location</Label>
                   <div className="flex items-center space-x-2">
-                    <Input placeholder="Enter location or use GPS" className="flex-1" />
+                    <Input 
+                      placeholder="Enter location or use GPS" 
+                      className="flex-1"
+                      value={reportLocation}
+                      onChange={(e) => setReportLocation(e.target.value)}
+                    />
                     <Button variant="outline" size="icon">
                       <MapPin className="w-4 h-4" />
                     </Button>
@@ -290,36 +428,65 @@ export function CommunityFeatures() {
               </CardContent>
             </Card>
 
-            {/* Recent Reports Map */}
+            {/* Interactive Community Reports Map */}
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center">
-                  <MapPin className="w-5 h-5 mr-2" />
-                  Recent Community Reports
+                <CardTitle className="flex items-center justify-between">
+                  <div className="flex items-center">
+                    <Satellite className="w-5 h-5 mr-2" />
+                    Community Reports Map
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {selectedCountry ? selectedCountry.name : 'Africa Overview'}
+                  </div>
                 </CardTitle>
               </CardHeader>
-              <CardContent>
-                <div className="aspect-square bg-muted rounded-lg relative overflow-hidden">
-                  <div className="absolute inset-0 bg-gradient-to-br from-blue-100 to-green-100 dark:from-blue-900/20 dark:to-green-900/20">
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="text-center">
-                        <MapPin className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-                        <p className="text-lg font-medium text-muted-foreground">Community Reports Map</p>
-                        <p className="text-sm text-muted-foreground mt-2">Geotagged environmental issues</p>
-                      </div>
+              <CardContent className="space-y-4">
+                {/* Country Search */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Search Location</label>
+                  <CountrySearch 
+                    onCountrySelect={handleCountrySelect}
+                    placeholder="Search African countries..."
+                    showDetails={false}
+                  />
+                </div>
+
+                {/* Interactive Map */}
+                {mapLoading ? (
+                  <div className="aspect-square bg-muted rounded-lg flex items-center justify-center">
+                    <div className="text-center">
+                      <Loader2 className="w-8 h-8 animate-spin mx-auto mb-2" />
+                      <p className="text-sm text-muted-foreground">Loading map...</p>
                     </div>
                   </div>
+                ) : (
+                  <div className="aspect-square rounded-lg overflow-hidden border">
+                    <div ref={mapRef} className="w-full h-full" style={{ minHeight: '300px' }} />
+                  </div>
+                )}
 
-                  {/* Report Markers */}
-                  <div className="absolute top-4 left-4">
-                    <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
+                {/* Map Legend */}
+                <div className="flex items-center justify-between text-xs">
+                  <div className="flex items-center space-x-4">
+                    <div className="flex items-center space-x-1">
+                      <div className="w-3 h-3 bg-red-500 rounded-full"></div>
+                      <span>Critical</span>
+                    </div>
+                    <div className="flex items-center space-x-1">
+                      <div className="w-3 h-3 bg-orange-500 rounded-full"></div>
+                      <span>High</span>
+                    </div>
+                    <div className="flex items-center space-x-1">
+                      <div className="w-3 h-3 bg-yellow-500 rounded-full"></div>
+                      <span>Medium</span>
+                    </div>
+                    <div className="flex items-center space-x-1">
+                      <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <span>Low</span>
+                    </div>
                   </div>
-                  <div className="absolute top-8 right-6">
-                    <div className="w-3 h-3 bg-yellow-500 rounded-full animate-pulse"></div>
-                  </div>
-                  <div className="absolute bottom-6 left-8">
-                    <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                  </div>
+                  <span className="text-muted-foreground">Report Severity</span>
                 </div>
               </CardContent>
             </Card>

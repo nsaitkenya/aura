@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -23,7 +23,14 @@ import {
   Globe,
   Award,
   Calendar,
+  Satellite,
+  Loader2
 } from "lucide-react"
+import { earthEngineAuth } from "@/lib/earthEngineAuth"
+import { mapService } from "@/lib/mapService"
+import { googleMapsService } from "@/lib/googleMapsService"
+import { CountrySearch } from "@/components/CountrySearch"
+import { africanCountries, getCountryEnvironmentalData } from "@/lib/countryData"
 
 const forestStats = [
   {
@@ -105,9 +112,218 @@ const reforestationSites = [
 ]
 
 export function ConservationModule() {
+  const mapRef = useRef<HTMLDivElement>(null);
+  const [mapInstance, setMapInstance] = useState<any>(null);
+  const [mapProvider, setMapProvider] = useState<string>('google');
+  const [isEEReady, setIsEEReady] = useState(false);
+  const [activeAnalysis, setActiveAnalysis] = useState('forest_loss');
+  const [loading, setLoading] = useState(true);
   const [selectedRegion, setSelectedRegion] = useState("congo-basin")
   const [carbonArea, setCarbonArea] = useState("")
   const [carbonResult, setCarbonResult] = useState<any>(null)
+  const [selectedCountry, setSelectedCountry] = useState<any>(null);
+  const [conservationFilters, setConservationFilters] = useState<Record<string, boolean>>({
+    forest_loss: true,
+    carbon_mapping: false,
+    protected_areas: false,
+    biodiversity: false
+  });
+
+  useEffect(() => {
+    initializeEarthEngine();
+    // Initialize Google Maps service
+    googleMapsService.initialize().catch(console.error);
+  }, []);
+
+  const initializeEarthEngine = async () => {
+    try {
+      setLoading(true);
+      await earthEngineAuth.authenticate();
+      setIsEEReady(true);
+      setLoading(false);
+    } catch (error) {
+      console.error('Earth Engine authentication failed:', error);
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    initializeConservationMap();
+  }, [isEEReady, selectedCountry]);
+
+  const initializeConservationMap = async () => {
+    if (!mapRef.current) return;
+
+    try {
+      console.log('Initializing conservation map...');
+      const center = selectedCountry ? selectedCountry.coordinates : { lat: -4.0383, lng: 21.7587 };
+      const zoom = selectedCountry ? 6 : 4;
+      
+      const mapResult = await mapService.initializeMap(mapRef.current, {
+        center,
+        zoom,
+        mapTypeId: 'satellite',
+        styles: [
+          {
+            featureType: 'all',
+            elementType: 'labels',
+            stylers: [{ visibility: 'on' }]
+          }
+        ]
+      });
+
+      // Load real environmental data for conservation
+      await loadConservationData(mapResult.map, center);
+
+      console.log('Map initialized:', mapResult);
+      setMapInstance(mapResult.map);
+      setMapProvider(mapResult.provider);
+      
+      // Run analysis if Earth Engine is ready
+      if (isEEReady && window.ee) {
+        runConservationAnalysis(mapResult.map, activeAnalysis);
+      }
+    } catch (error) {
+      console.error('Failed to initialize conservation map:', error);
+    }
+  };
+
+  const handleCountrySelect = async (country: any) => {
+    setSelectedCountry(country);
+    try {
+      const envData = await getCountryEnvironmentalData(country.code);
+      if (envData) {
+        console.log('Selected country conservation data:', envData);
+      }
+    } catch (error) {
+      console.error('Error getting country conservation data:', error);
+    }
+  };
+
+  const loadConservationData = async (map: any, location: any) => {
+    try {
+      const environmentalData = await googleMapsService.getEnvironmentalData(location);
+      
+      // Add conservation-related markers
+      if (environmentalData.nearbyFeatures) {
+        environmentalData.nearbyFeatures.forEach((feature: any) => {
+          if (feature.geometry?.location && (feature.types?.includes('park') || feature.types?.includes('natural_feature'))) {
+            const marker = new (window as any).google.maps.Marker({
+              position: feature.geometry.location,
+              map: map,
+              title: feature.name,
+              icon: {
+                url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
+                  <svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="10" cy="10" r="8" fill="#059669" stroke="white" stroke-width="2"/>
+                  </svg>
+                `),
+                scaledSize: new (window as any).google.maps.Size(20, 20)
+              }
+            });
+            
+            const infoWindow = new (window as any).google.maps.InfoWindow({
+              content: `
+                <div style="padding: 10px;">
+                  <h3 style="margin: 0 0 5px 0; font-size: 14px;">${feature.name}</h3>
+                  <p style="margin: 0; font-size: 12px; color: #666;">${feature.vicinity || 'Conservation area'}</p>
+                  <p style="margin: 5px 0 0 0; font-size: 11px; color: #888;">Type: ${feature.types?.[0] || 'Protected area'}</p>
+                </div>
+              `
+            });
+            
+            marker.addListener('click', () => {
+              infoWindow.open(map, marker);
+            });
+          }
+        });
+      }
+    } catch (error) {
+      console.error('Error loading conservation data:', error);
+    }
+  };
+
+  const toggleConservationFilter = (filter: string) => {
+    setConservationFilters(prev => {
+      const newFilters = {
+        forest_loss: false,
+        carbon_mapping: false,
+        protected_areas: false,
+        biodiversity: false
+      };
+      newFilters[filter as keyof typeof newFilters] = !prev[filter as keyof typeof prev];
+      return newFilters;
+    });
+    
+    setActiveAnalysis(filter);
+    
+    if (mapInstance && isEEReady && window.ee) {
+      runConservationAnalysis(mapInstance, filter);
+    }
+  };
+
+  const runConservationAnalysis = async (map: any, analysisType: string) => {
+    if (!window.ee || !map) return;
+
+    try {
+      let analysis: any, visualization: any;
+
+      switch (analysisType) {
+        case 'forest_loss':
+          // Hansen Global Forest Change
+          const gfc = window.ee.Image('UMD/hansen/global_forest_change_2022_v1_10');
+          const lossYear = gfc.select(['lossyear']);
+          const loss2020Plus = lossYear.gte(20); // Forest loss 2020 onwards
+          
+          analysis = loss2020Plus.updateMask(loss2020Plus);
+          visualization = { palette: ['red'] };
+          break;
+
+        case 'carbon_mapping':
+          // Biomass mapping for carbon estimation
+          const biomass = window.ee.ImageCollection('WCMC/biomass_carbon_density/v1_0')
+            .first();
+          
+          analysis = biomass.select('carbon_tonnes_per_ha');
+          visualization = {
+            min: 0, max: 300,
+            palette: ['yellow', 'orange', 'red', 'purple']
+          };
+          break;
+
+        case 'protected_areas':
+          // Protected areas overlay
+          const wdpa = window.ee.FeatureCollection('WCMC/WDPA/current/polygons');
+          analysis = window.ee.Image().paint(wdpa, 1);
+          visualization = { palette: ['green'] };
+          break;
+
+        case 'biodiversity':
+          // Species richness mapping
+          const species = window.ee.Image('RESOLVE/ECOREGIONS/2017')
+            .select('ECO_ID');
+          
+          analysis = species;
+          visualization = {
+            min: 0, max: 1000,
+            palette: ['lightblue', 'blue', 'darkblue', 'purple', 'red']
+          };
+          break;
+      }
+
+      mapService.addEarthEngineOverlay(map, mapProvider, analysis.getMap(visualization));
+
+    } catch (error) {
+      console.error('Conservation analysis error:', error);
+    }
+  };
+
+  const analysisOptions = [
+    { key: 'forest_loss', label: 'Forest Loss', description: 'Recent deforestation detection' },
+    { key: 'carbon_mapping', label: 'Carbon Mapping', description: 'Biomass and carbon storage' },
+    { key: 'protected_areas', label: 'Protected Areas', description: 'Conservation zones overlay' },
+    { key: 'biodiversity', label: 'Biodiversity', description: 'Species richness mapping' }
+  ];
 
   const calculateCarbon = () => {
     const area = Number.parseFloat(carbonArea)
@@ -127,9 +343,12 @@ export function ConservationModule() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold text-foreground">Conservation & Reforestation</h1>
-          <p className="text-muted-foreground mt-1">Forest monitoring, carbon tracking, and biodiversity protection</p>
+          <p className="text-muted-foreground mt-1">Satellite-based forest monitoring, carbon tracking, and biodiversity protection</p>
         </div>
         <div className="flex items-center space-x-2">
+          <Badge className="bg-green-100 text-green-700">
+            {isEEReady ? "Monitoring Active" : "Initializing..."}
+          </Badge>
           <Button variant="outline">
             <Calendar className="w-4 h-4 mr-2" />
             Planting Calendar
@@ -178,65 +397,128 @@ export function ConservationModule() {
         </TabsList>
 
         <TabsContent value="monitoring" className="space-y-6">
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Forest Map */}
-            <Card className="lg:col-span-2">
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+            {/* Analysis Controls */}
+            <Card className="lg:col-span-1">
               <CardHeader>
                 <CardTitle className="flex items-center">
-                  <TreePine className="w-5 h-5 mr-2" />
-                  Real-time Forest Monitoring
+                  <Satellite className="w-5 h-5 mr-2" />
+                  Conservation Analysis
                 </CardTitle>
               </CardHeader>
-              <CardContent>
-                <div className="aspect-video bg-muted rounded-lg relative overflow-hidden">
-                  <div className="absolute inset-0 bg-gradient-to-br from-green-100 to-emerald-100 dark:from-green-900/20 dark:to-emerald-900/20">
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="text-center">
-                        <TreePine className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-                        <p className="text-lg font-medium text-muted-foreground">Satellite Forest Coverage</p>
-                        <p className="text-sm text-muted-foreground mt-2">Real-time deforestation detection</p>
-                      </div>
-                    </div>
-                  </div>
+              <CardContent className="space-y-4">
+                {/* Country Search */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Search Location</label>
+                  <CountrySearch 
+                    onCountrySelect={handleCountrySelect}
+                    placeholder="Search African countries..."
+                    showDetails={false}
+                  />
+                </div>
 
-                  {/* Alert Markers */}
-                  <div className="absolute top-4 left-4">
-                    <div className="flex items-center space-x-2 bg-destructive/90 text-destructive-foreground px-2 py-1 rounded-full text-xs">
-                      <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
-                      <span>Critical Alert</span>
-                    </div>
+                {/* Conservation Data Filters */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Conservation Layers</label>
+                  <div className="space-y-2">
+                    {[
+                      { key: 'forest_loss', label: 'Forest Loss', icon: TreePine, color: 'text-red-600' },
+                      { key: 'carbon_mapping', label: 'Carbon Storage', icon: Leaf, color: 'text-green-600' },
+                      { key: 'protected_areas', label: 'Protected Areas', icon: Globe, color: 'text-blue-600' },
+                      { key: 'biodiversity', label: 'Biodiversity', icon: Binoculars, color: 'text-purple-600' }
+                    ].map((filter) => {
+                      const Icon = filter.icon;
+                      return (
+                        <div key={filter.key} className="flex items-center space-x-2">
+                          <input
+                            type="checkbox"
+                            id={filter.key}
+                            checked={conservationFilters[filter.key as keyof typeof conservationFilters]}
+                            onChange={() => toggleConservationFilter(filter.key)}
+                            className="rounded border-gray-300"
+                          />
+                          <label htmlFor={filter.key} className="flex items-center space-x-2 text-sm cursor-pointer">
+                            <Icon className={`w-4 h-4 ${filter.color}`} />
+                            <span>{filter.label}</span>
+                          </label>
+                        </div>
+                      );
+                    })}
                   </div>
-                  <div className="absolute top-16 right-8">
-                    <div className="flex items-center space-x-2 bg-yellow-500/90 text-white px-2 py-1 rounded-full text-xs">
-                      <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
-                      <span>High Alert</span>
-                    </div>
-                  </div>
+                </div>
 
-                  {/* Legend */}
-                  <div className="absolute bottom-4 right-4 bg-background/90 backdrop-blur-sm rounded-lg p-3 border">
-                    <h4 className="font-medium text-sm mb-2">Forest Health</h4>
-                    <div className="space-y-1 text-xs">
-                      <div className="flex items-center space-x-2">
-                        <div className="w-3 h-3 bg-green-600 rounded"></div>
-                        <span>Healthy Forest</span>
+                {/* Country Conservation Stats */}
+                {selectedCountry && (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Conservation in {selectedCountry.name}</label>
+                    <div className="space-y-2 text-sm">
+                      <div className="flex justify-between">
+                        <span>Forest Cover:</span>
+                        <span className="font-medium">{selectedCountry.forestCover}%</span>
                       </div>
-                      <div className="flex items-center space-x-2">
-                        <div className="w-3 h-3 bg-yellow-500 rounded"></div>
-                        <span>At Risk</span>
+                      <div className="flex justify-between">
+                        <span>Protected Areas:</span>
+                        <span className="font-medium">{selectedCountry.conservationAreas}</span>
                       </div>
-                      <div className="flex items-center space-x-2">
-                        <div className="w-3 h-3 bg-red-600 rounded"></div>
-                        <span>Deforested</span>
+                      <div className="flex justify-between">
+                        <span>Water Quality:</span>
+                        <span className="font-medium">{selectedCountry.waterQuality}/100</span>
                       </div>
                     </div>
+                  </div>
+                )}
+
+                {/* Analysis Options */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Analysis Type</label>
+                  <div className="space-y-2">
+                    {analysisOptions.map((option) => (
+                      <Button
+                        key={option.key}
+                        variant={activeAnalysis === option.key ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => {
+                          setActiveAnalysis(option.key);
+                          if (mapInstance && isEEReady) {
+                            runConservationAnalysis(mapInstance, option.key);
+                          }
+                        }}
+                        className="w-full justify-start text-xs"
+                      >
+                        {option.label}
+                      </Button>
+                    ))}
                   </div>
                 </div>
               </CardContent>
             </Card>
 
+            {/* Satellite Forest Map */}
+            <Card className="lg:col-span-2">
+              <CardHeader>
+                <CardTitle className="flex items-center">
+                  <Satellite className="w-5 h-5 mr-2" />
+                  Satellite Forest Monitoring
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {loading ? (
+                  <div className="aspect-video bg-muted rounded-lg flex items-center justify-center">
+                    <div className="text-center">
+                      <Loader2 className="w-8 h-8 animate-spin mx-auto mb-2" />
+                      <p className="text-sm text-muted-foreground">Loading Earth Engine...</p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="aspect-video rounded-lg overflow-hidden border">
+                    <div ref={mapRef} className="w-full h-full" style={{ minHeight: '400px' }} />
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
             {/* Deforestation Alerts */}
-            <Card>
+            <Card className="lg:col-span-1">
               <CardHeader>
                 <CardTitle className="flex items-center">
                   <AlertTriangle className="w-5 h-5 mr-2" />
