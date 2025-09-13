@@ -12,16 +12,22 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { useSearch } from "@/lib/SearchContext" // ✅ added
 
 export function Header() {
+  const { query, setQuery } = useSearch() // ✅ use global search context
+
   return (
     <header className="bg-white border-b border-gray-200 px-6 py-4">
       <div className="flex items-center justify-between">
+        {/* Search bar */}
         <div className="flex-1 max-w-lg">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-emerald-500 w-5 h-5" />
             <Input
               placeholder="Search environmental data, locations, alerts..."
+              value={query} // ✅ controlled input
+              onChange={(e) => setQuery(e.target.value)} // ✅ updates context
               className="pl-11 h-11 bg-emerald-50/50 border-emerald-200 focus:border-emerald-500 focus:ring-emerald-500 text-sm placeholder:text-emerald-600/70"
             />
           </div>
