@@ -17,6 +17,7 @@ import {
   Thermometer,
   Leaf,
 } from "lucide-react"
+import { useState } from "react";
 import InteractiveMap from "@/components/InteractiveMap"
 
 const stats = [
@@ -124,6 +125,13 @@ const regionalData = [
 ]
 
 export function Dashboard() {
+  const [activeLayers, setActiveLayers] = useState<string[]>([]);
+
+  const toggleLayer = (layer: string) => {
+    setActiveLayers(prev => 
+      prev.includes(layer) ? prev.filter(l => l !== layer) : [...prev, layer]
+    );
+  };
   return (
     <div className="p-6 space-y-8 max-w-7xl mx-auto">
       <div className="text-center space-y-4">
@@ -186,33 +194,43 @@ export function Dashboard() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Enhanced Interactive Map */}
-        <Card className="lg:col-span-2 border-0 shadow-lg">
-          <CardHeader className="pb-4">
-            <div className="flex items-center justify-between">
-              <CardTitle className="flex items-center text-xl">
-                <Zap className="w-6 h-6 mr-2 text-emerald-600" />
-                Africa Environmental Intelligence
-              </CardTitle>
-              <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100">Real-time Data</Badge>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {/* Data Layer Controls */}
-            <div className="flex flex-wrap gap-2">
-              {["Water Quality", "Temperature", "Rainfall", "Vegetation", "Air Quality"].map((layer) => (
-                <Button key={layer} variant="outline" size="sm" className="text-xs bg-transparent">
-                  {layer}
-                </Button>
-              ))}
-            </div>
+        <div className="lg:col-span-2 order-1 lg:order-1">
+          <Card className="border-0 shadow-lg h-full">
+            <CardHeader className="pb-4">
+              <div className="flex items-center justify-between">
+                <CardTitle className="flex items-center text-xl">
+                  <Zap className="w-6 h-6 mr-2 text-emerald-600" />
+                  Africa Environmental Intelligence
+                </CardTitle>
+                <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100">Real-time Data</Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4 h-full flex flex-col">
+              {/* Data Layer Controls */}
+              <div className="flex flex-wrap gap-2">
+                {["Water Quality", "Temperature", "Rainfall", "Vegetation", "Air Quality"].map((layer) => (
+                  <Button 
+                    key={layer} 
+                    variant={activeLayers.includes(layer) ? "default" : "outline"}
+                    size="sm" 
+                    className="text-xs"
+                    onClick={() => toggleLayer(layer)}
+                  >
+                    {layer}
+                  </Button>
+                ))}
+              </div>
 
-            {/* Interactive Map Component */}
-            <InteractiveMap />
-          </CardContent>
-        </Card>
+              {/* Interactive Map Component */}
+              <div className="flex-grow rounded-xl overflow-hidden">
+                <InteractiveMap activeLayers={activeLayers} />
+              </div>
+            </CardContent>
+          </Card>
+        </div>
 
-        {/* Enhanced Alerts Panel */}
-        <div className="space-y-6">
+        {/* Alerts and Regional Performance Panel */}
+        <div className="lg:col-span-1 order-2 lg:order-2 space-y-6">
           <Card className="border-0 shadow-lg">
             <CardHeader>
               <CardTitle className="flex items-center text-lg">

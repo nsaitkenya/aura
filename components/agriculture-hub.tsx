@@ -47,7 +47,8 @@ import {
 
 } from "lucide-react"
 import { earthEngineAuth } from "@/lib/earthEngineAuth"
-import { mapService } from "@/lib/mapService"
+import InteractiveMap from "@/components/InteractiveMap";
+import { mapService } from "@/lib/mapService";
 import { CountrySearch } from "@/components/CountrySearch"
 import { africanCountries, getCountryAgriculturalData } from "@/lib/countryData"
 import { geminiService } from "@/lib/geminiService"
@@ -130,9 +131,6 @@ interface ScanResult {
 }
 
 export default function AgricultureHub() {
-  const mapRef = useRef<HTMLDivElement>(null);
-  const [mapInstance, setMapInstance] = useState<any>(null);
-  const [mapProvider, setMapProvider] = useState<string>('google');
   const [isEEReady, setIsEEReady] = useState(false);
   const [cropAnalysis, setCropAnalysis] = useState('ndvi');
   const [fieldData, setFieldData] = useState<FieldData | null>(null);
@@ -162,10 +160,6 @@ export default function AgricultureHub() {
     initializeEarthEngine();
   }, []);
 
-  useEffect(() => {
-    // Initialize map regardless of Earth Engine status
-    initializeAgricultureMap();
-  }, [isEEReady, selectedCountry]);
 
   const handleCountrySelect = (country: any) => {
     setSelectedCountry(country);
@@ -201,9 +195,6 @@ export default function AgricultureHub() {
     const newAnalysis = filterToAnalysis[filter] || 'ndvi';
     setCropAnalysis(newAnalysis);
     
-    if (mapInstance && isEEReady && window.ee) {
-      runCropAnalysis(mapInstance, newAnalysis);
-    }
   };
 
   const initializeEarthEngine = async () => {
@@ -219,85 +210,7 @@ export default function AgricultureHub() {
     }
   };
 
-  const initializeAgricultureMap = async () => {
-    if (!mapRef.current) return;
 
-    try {
-      console.log('Initializing agriculture map...');
-      const center = selectedCountry ? selectedCountry.coordinates : { lat: -0.0236, lng: 37.9062 };
-      const zoom = selectedCountry ? 7 : 5;
-      
-      const mapResult = await mapService.initializeMap(mapRef.current, {
-        center,
-        zoom,
-        mapTypeId: 'satellite'
-      });
-
-      console.log('Map initialized:', mapResult);
-      setMapInstance(mapResult.map);
-      setMapProvider(mapResult.provider);
-      
-      // Add field click handler
-      if (mapResult.provider === 'google') {
-        mapResult.map.addListener('click', (event: any) => {
-          handleFieldClick(event.latLng.lat(), event.latLng.lng());
-        });
-      }
-      
-      // Run analysis if Earth Engine is ready
-      if (isEEReady && window.ee) {
-        runCropAnalysis(mapResult.map, cropAnalysis);
-      }
-    } catch (error) {
-      console.error('Failed to initialize agriculture map:', error);
-    }
-  };
-
-  const runCropAnalysis = async (map: any, analysisType: string) => {
-    if (!isEEReady || !map) return;
-
-    try {
-      setAnalysisLoading(true);
-      const bounds = map.getBounds();
-      
-      const boundsObj = {
-        north: bounds.getNorth(),
-        south: bounds.getSouth(),
-        east: bounds.getEast(),
-        west: bounds.getWest()
-      };
-
-      // Get Earth Engine analysis
-      const analysis = await earthEngineAuth.getCropAnalysis(boundsObj, analysisType);
-      
-      if (analysis && analysis.mapid) {
-        // Remove existing overlay
-        if (currentOverlay) {
-          map.overlayMapTypes.removeAt(0);
-        }
-
-        // Add new overlay
-        const imageMapType = new (window as any).google.maps.ImageMapType({
-          getTileUrl: (coord: any, zoom: number) => {
-            return `https://earthengine.googleapis.com/v1alpha/projects/earthengine-legacy/maps/${analysis.mapid}/tiles/${zoom}/${coord.x}/${coord.y}?token=${analysis.token}`;
-          },
-          tileSize: new (window as any).google.maps.Size(256, 256),
-          name: analysisType,
-          opacity: 0.7
-        });
-
-        map.overlayMapTypes.insertAt(0, imageMapType);
-        setCurrentOverlay(imageMapType);
-        
-        // Trigger Gemini analysis for crop recommendations
-        await runGeminiCropAnalysis(analysisType, boundsObj);
-      }
-    } catch (error) {
-      console.error('Crop analysis failed:', error);
-    } finally {
-      setAnalysisLoading(false);
-    }
-  };
 
   const runGeminiCropAnalysis = async (analysisType: string, bounds: any) => {
     try {
@@ -348,46 +261,6 @@ export default function AgricultureHub() {
     }
   };
 
-  const handleFieldClick = async (lat: number, lng: number) => {
-    try {
-      const point = window.ee.Geometry.Point([lng, lat]);
-      
-      // Get the current analysis image
-      let currentImage;
-      if (!mapInstance) {
-        // Recreate the current analysis if map not provided
-        const sentinel2 = window.ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
-          .filterDate('2024-01-01', '2024-12-31')
-          .filterBounds(point)
-          .filter(window.ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20));
-        
-        if (cropAnalysis === 'ndvi') {
-          const addNDVI = (img: any) => {
-            const ndvi = img.normalizedDifference(['B8', 'B4']).rename('NDVI');
-            return img.addBands(ndvi);
-          };
-          currentImage = sentinel2.map(addNDVI).select('NDVI').mean();
-        }
-      } else {
-        currentImage = mapInstance;
-      }
-      
-      const value = currentImage.sample(point, 30);
-      
-      value.evaluate((result: any, error: any) => {
-        if (!error && result.features.length > 0) {
-          setFieldData({
-            lat: lat,
-            lng: lng,
-            value: result.features[0].properties,
-            analysisType: cropAnalysis
-          });
-        }
-      });
-    } catch (error) {
-      console.error('Field analysis error:', error);
-    }
-  };
 
   const analysisTypes = [
     { key: 'ndvi', label: 'Vegetation Health', description: 'NDVI analysis for crop vigor' },
@@ -479,11 +352,16 @@ export default function AgricultureHub() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <div 
-                  ref={mapRef} 
-                  className="w-full h-96 rounded-lg border bg-gray-100"
-                  style={{ minHeight: '400px' }}
-                />
+                <div className="w-full h-96 rounded-lg border bg-gray-100" style={{ minHeight: '400px' }}>
+                  <InteractiveMap 
+                    activeLayers={Object.keys(cropFilters).filter(k => cropFilters[k as keyof typeof cropFilters])}
+                    initialViewState={{
+                      longitude: selectedCountry ? selectedCountry.coordinates.lng : 20,
+                      latitude: selectedCountry ? selectedCountry.coordinates.lat : 0,
+                      zoom: selectedCountry ? 7 : 4
+                    }}
+                  />
+                </div>
                 
                 {/* Gemini AI Analysis Panel */}
                 {showGeminiPanel && (
@@ -526,7 +404,6 @@ export default function AgricultureHub() {
                     showDetails={false}
                   />
                 </div>
-
                 {/* Crop Data Filters */}
                 <div className="space-y-2">
                   <label className="text-sm font-medium">Crop Data Layers</label>
@@ -578,9 +455,6 @@ export default function AgricultureHub() {
                     className="w-full text-left justify-start"
                     onClick={() => {
                       setCropAnalysis(type.key);
-                      if (mapInstance) {
-                        runCropAnalysis(mapInstance, type.key);
-                      }
                     }}
                   >
                     <div className="text-left">
@@ -671,66 +545,243 @@ export default function AgricultureHub() {
                     <Badge variant={task.status === "pending" ? "destructive" : "secondary"}>{task.status}</Badge>
                   </div>
                 ))}
+                </div>
               </CardContent>
             </Card>
           </TabsContent>
 
           <TabsContent value="scanner" className="space-y-6">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center">
-                    <Camera className="w-5 h-5 mr-2" />
-                    AI Crop Scanner
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center">
-                    <Camera className="w-12 h-12 mx-auto text-gray-400 mb-4" />
-                    <p className="text-sm text-gray-600 mb-4">
-                      Upload or capture an image of your crop for AI analysis
-                    </p>
-                    <Button onClick={handleImageScan} className="mb-2">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Image Upload */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center">
+                  <Camera className="w-5 h-5 mr-2" />
+                  Crop Health Scanner
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="border-2 border-dashed border-muted-foreground/25 rounded-lg p-8 text-center">
+                  <Camera className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+                  <p className="text-muted-foreground mb-4">Take a photo or upload an image of your crop</p>
+                  <div className="flex flex-col space-y-2">
+                    <Button className="w-full">
                       <Camera className="w-4 h-4 mr-2" />
-                      Scan Crop
+                      Take Photo
+                    </Button>
+                    <Button variant="outline" className="w-full bg-transparent">
+                      <Upload className="w-4 h-4 mr-2" />
+                      Upload Image
                     </Button>
                   </div>
-                  
-                  {scanResult && (
-                    <Card>
-                      <CardHeader>
-                        <CardTitle className="text-sm">Analysis Results</CardTitle>
-                      </CardHeader>
-                      <CardContent className="space-y-2">
-                        <div className="flex justify-between">
-                          <span className="text-sm font-medium">Disease:</span>
-                          <span className="text-sm">{scanResult.disease}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-sm font-medium">Confidence:</span>
-                          <span className="text-sm">{scanResult.confidence}%</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-sm font-medium">Severity:</span>
-                          <span className="text-sm">{scanResult.severity}</span>
-                        </div>
-                        <div className="mt-3">
-                          <p className="text-sm font-medium">Treatment:</p>
-                          <p className="text-xs text-gray-600">{scanResult.treatment}</p>
-                        </div>
-                        <div className="mt-2">
-                          <p className="text-sm font-medium">Prevention:</p>
-                          <p className="text-xs text-gray-600">{scanResult.prevention}</p>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  )}
-                </CardContent>
-              </Card>
-            </div>
-          </TabsContent>
+                </div>
 
-          <TabsContent value="market" className="space-y-6">
+                <div className="space-y-3">
+                  <Label>Crop Type</Label>
+                  <Select value={selectedCrop} onValueChange={setSelectedCrop}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="maize">Maize</SelectItem>
+                      <SelectItem value="cassava">Cassava</SelectItem>
+                      <SelectItem value="beans">Beans</SelectItem>
+                      <SelectItem value="tomatoes">Tomatoes</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <Button onClick={handleImageScan} className="w-full">
+                  <Scan className="w-4 h-4 mr-2" />
+                  Analyze Crop Health
+                </Button>
+              </CardContent>
+            </Card>
+
+            {/* Scan Results */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center">
+                  <Bug className="w-5 h-5 mr-2" />
+                  Analysis Results
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {scanResult ? (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between p-3 bg-destructive/10 rounded-lg">
+                      <div className="flex items-center space-x-2">
+                        <AlertTriangle className="w-5 h-5 text-destructive" />
+                        <span className="font-medium">{scanResult.disease}</span>
+                      </div>
+                      <Badge variant="destructive">{scanResult.confidence}% confidence</Badge>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div>
+                        <Label className="text-sm font-medium">Severity</Label>
+                        <p className="text-sm text-muted-foreground">{scanResult.severity}</p>
+                      </div>
+
+                      <div>
+                        <Label className="text-sm font-medium">Recommended Treatment</Label>
+                        <p className="text-sm text-muted-foreground">{scanResult.treatment}</p>
+                      </div>
+
+                      <div>
+                        <Label className="text-sm font-medium">Prevention</Label>
+                        <p className="text-sm text-muted-foreground">{scanResult.prevention}</p>
+                      </div>
+                    </div>
+
+                    <Button className="w-full">
+                      <Calendar className="w-4 h-4 mr-2" />
+                      Schedule Treatment
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="text-center py-8">
+                    <Scan className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+                    <p className="text-muted-foreground">Upload an image to get AI-powered crop analysis</p>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="irrigation" className="space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center">
+                  <Droplets className="w-5 h-5 mr-2" />
+                  Smart Irrigation Optimizer
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="text-center p-3 bg-muted rounded-lg">
+                    <Thermometer className="w-6 h-6 mx-auto text-red-500 mb-2" />
+                    <p className="text-sm font-medium">Temperature</p>
+                    <p className="text-lg font-bold">28°C</p>
+                  </div>
+                  <div className="text-center p-3 bg-muted rounded-lg">
+                    <Cloud className="w-6 h-6 mx-auto text-blue-500 mb-2" />
+                    <p className="text-sm font-medium">Humidity</p>
+                    <p className="text-lg font-bold">65%</p>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <div>
+                    <Label>Soil Moisture Level</Label>
+                    <Progress value={45} className="mt-2" />
+                    <p className="text-xs text-muted-foreground mt-1">45% - Needs irrigation</p>
+                  </div>
+
+                  <div>
+                    <Label>Recommended Water Amount</Label>
+                    <div className="text-2xl font-bold text-primary">25mm</div>
+                    <p className="text-xs text-muted-foreground">Based on crop type, soil, and weather</p>
+                  </div>
+                </div>
+
+                <Button className="w-full">
+                  <Droplets className="w-4 h-4 mr-2" />
+                  Start Irrigation
+                </Button>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Irrigation Schedule</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between p-3 border rounded-lg">
+                    <div>
+                      <p className="font-medium text-sm">Maize Field A</p>
+                      <p className="text-xs text-muted-foreground">Next: Today 6:00 AM</p>
+                    </div>
+                    <Badge className="bg-blue-500">Active</Badge>
+                  </div>
+                  <div className="flex items-center justify-between p-3 border rounded-lg">
+                    <div>
+                      <p className="font-medium text-sm">Tomato Field D</p>
+                      <p className="text-xs text-muted-foreground">Next: Tomorrow 5:30 AM</p>
+                    </div>
+                    <Badge variant="secondary">Scheduled</Badge>
+                  </div>
+                  <div className="flex items-center justify-between p-3 border rounded-lg">
+                    <div>
+                      <p className="font-medium text-sm">Bean Field C</p>
+                      <p className="text-xs text-muted-foreground">Next: In 2 days</p>
+                    </div>
+                    <Badge variant="outline">Pending</Badge>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="predictions" className="space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center">
+                  <TrendingUp className="w-5 h-5 mr-2" />
+                  Yield Predictions
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  {cropHealth.map((crop) => (
+                    <div key={crop.crop} className="flex items-center justify-between p-3 border rounded-lg">
+                      <div>
+                        <p className="font-medium text-sm">{crop.crop}</p>
+                        <p className="text-xs text-muted-foreground">{crop.area}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="font-bold text-sm">
+                          {crop.crop === "Maize"
+                            ? "4.2 tons"
+                            : crop.crop === "Cassava"
+                              ? "3.8 tons"
+                              : crop.crop === "Beans"
+                                ? "2.1 tons"
+                                : "2.2 tons"}
+                        </p>
+                        <p className="text-xs text-green-600">+8.5% vs last season</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center">
+                  <BarChart3 className="w-5 h-5 mr-2" />
+                  Harvest Timeline
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="aspect-video bg-muted rounded-lg flex items-center justify-center">
+                  <div className="text-center">
+                    <Calendar className="w-12 h-12 mx-auto text-muted-foreground mb-2" />
+                    <p className="text-sm text-muted-foreground">Harvest prediction timeline</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="market" className="space-y-6">
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center">

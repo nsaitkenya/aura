@@ -1,6 +1,7 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
+import type { ViewState } from 'react-map-gl';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -8,6 +9,8 @@ import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import InteractiveMap from "@/components/InteractiveMap"
+import { searchCountries } from "@/lib/countryData"
 import {
   MapPin,
   Layers,
@@ -40,10 +43,28 @@ const regions = [
   { id: "south", name: "Southern Africa", countries: 10, alerts: 4 },
 ]
 
-export function EnvironmentalIntelligence() {
+export function EnvironmentalIntelligence({ searchQuery }: { searchQuery?: string }) {
   const [selectedLayers, setSelectedLayers] = useState(dataLayers.filter((layer) => layer.enabled))
   const [timeRange, setTimeRange] = useState([2017])
   const [selectedRegions, setSelectedRegions] = useState<string[]>(["west", "east"])
+  const [mapViewState, setMapViewState] = useState<Partial<ViewState> | undefined>();
+
+  useEffect(() => {
+    if (searchQuery) {
+      const fetchCountry = async () => {
+        const results = await searchCountries(searchQuery);
+        if (results && results.length > 0) {
+          const country = results[0];
+          setMapViewState({
+            longitude: country.coordinates.lng,
+            latitude: country.coordinates.lat,
+            zoom: 5,
+          });
+        }
+      };
+      fetchCountry();
+    }
+  }, [searchQuery]);
 
   const toggleLayer = (layerId: string) => {
     const layer = dataLayers.find((l) => l.id === layerId)
@@ -189,50 +210,23 @@ export function EnvironmentalIntelligence() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="aspect-[4/3] bg-muted rounded-lg relative overflow-hidden">
-              {/* Map Placeholder with Layer Indicators */}
-              <div className="absolute inset-0 bg-gradient-to-br from-green-100 to-blue-100 dark:from-green-900/20 dark:to-blue-900/20">
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="text-center">
-                    <MapPin className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
-                    <p className="text-lg font-medium text-muted-foreground">Interactive Africa Map</p>
-                    <p className="text-sm text-muted-foreground mt-2">
-                      Satellite view with {selectedLayers.length} active layers
-                    </p>
-                  </div>
-                </div>
-              </div>
+            <div className="aspect-[4/3] relative overflow-hidden">
+              <InteractiveMap 
+                activeLayers={selectedLayers.map(layer => layer.name)}
+                viewState={mapViewState}
+              />
 
               {/* Active Layers Indicator */}
-              <div className="absolute top-4 left-4 space-y-2">
+              <div className="absolute top-4 left-4 space-y-2 z-10">
                 {selectedLayers.map((layer) => {
                   const Icon = layer.icon
                   return (
-                    <Badge key={layer.id} variant="secondary" className="flex items-center space-x-1">
+                    <Badge key={layer.id} variant="secondary" className="flex items-center space-x-1 bg-background/90 backdrop-blur-sm">
                       <Icon className={`w-3 h-3 ${layer.color}`} />
                       <span className="text-xs">{layer.name}</span>
                     </Badge>
                   )
                 })}
-              </div>
-
-              {/* Map Legend */}
-              <div className="absolute bottom-4 right-4 bg-background/90 backdrop-blur-sm rounded-lg p-3 border">
-                <h4 className="font-medium text-sm mb-2">Legend</h4>
-                <div className="space-y-1 text-xs">
-                  <div className="flex items-center space-x-2">
-                    <div className="w-3 h-3 bg-green-500 rounded"></div>
-                    <span>Healthy</span>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <div className="w-3 h-3 bg-yellow-500 rounded"></div>
-                    <span>Moderate</span>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <div className="w-3 h-3 bg-red-500 rounded"></div>
-                    <span>Critical</span>
-                  </div>
-                </div>
               </div>
             </div>
           </CardContent>

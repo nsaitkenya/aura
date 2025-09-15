@@ -27,7 +27,8 @@ import {
   Loader2
 } from "lucide-react"
 import { earthEngineAuth } from "@/lib/earthEngineAuth"
-import { mapService } from "@/lib/mapService"
+import InteractiveMap from "@/components/InteractiveMap";
+import { mapService } from "@/lib/mapService";
 import { googleMapsService } from "@/lib/googleMapsService"
 import { CountrySearch } from "@/components/CountrySearch"
 import { africanCountries, getCountryEnvironmentalData } from "@/lib/countryData"
@@ -112,9 +113,6 @@ const reforestationSites = [
 ]
 
 export function ConservationModule() {
-  const mapRef = useRef<HTMLDivElement>(null);
-  const [mapInstance, setMapInstance] = useState<any>(null);
-  const [mapProvider, setMapProvider] = useState<string>('google');
   const [isEEReady, setIsEEReady] = useState(false);
   const [activeAnalysis, setActiveAnalysis] = useState('forest_loss');
   const [loading, setLoading] = useState(true);
@@ -147,46 +145,7 @@ export function ConservationModule() {
     }
   };
 
-  useEffect(() => {
-    initializeConservationMap();
-  }, [isEEReady, selectedCountry]);
 
-  const initializeConservationMap = async () => {
-    if (!mapRef.current) return;
-
-    try {
-      console.log('Initializing conservation map...');
-      const center = selectedCountry ? selectedCountry.coordinates : { lat: -4.0383, lng: 21.7587 };
-      const zoom = selectedCountry ? 6 : 4;
-      
-      const mapResult = await mapService.initializeMap(mapRef.current, {
-        center,
-        zoom,
-        mapTypeId: 'satellite',
-        styles: [
-          {
-            featureType: 'all',
-            elementType: 'labels',
-            stylers: [{ visibility: 'on' }]
-          }
-        ]
-      });
-
-      // Load real environmental data for conservation
-      await loadConservationData(mapResult.map, center);
-
-      console.log('Map initialized:', mapResult);
-      setMapInstance(mapResult.map);
-      setMapProvider(mapResult.provider);
-      
-      // Run analysis if Earth Engine is ready
-      if (isEEReady && window.ee) {
-        runConservationAnalysis(mapResult.map, activeAnalysis);
-      }
-    } catch (error) {
-      console.error('Failed to initialize conservation map:', error);
-    }
-  };
 
   const handleCountrySelect = async (country: any) => {
     setSelectedCountry(country);
@@ -200,48 +159,6 @@ export function ConservationModule() {
     }
   };
 
-  const loadConservationData = async (map: any, location: any) => {
-    try {
-      const environmentalData = await googleMapsService.getEnvironmentalData(location);
-      
-      // Add conservation-related markers
-      if (environmentalData.nearbyFeatures) {
-        environmentalData.nearbyFeatures.forEach((feature: any) => {
-          if (feature.geometry?.location && (feature.types?.includes('park') || feature.types?.includes('natural_feature'))) {
-            const marker = new (window as any).google.maps.Marker({
-              position: feature.geometry.location,
-              map: map,
-              title: feature.name,
-              icon: {
-                url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
-                  <svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
-                    <circle cx="10" cy="10" r="8" fill="#059669" stroke="white" stroke-width="2"/>
-                  </svg>
-                `),
-                scaledSize: new (window as any).google.maps.Size(20, 20)
-              }
-            });
-            
-            const infoWindow = new (window as any).google.maps.InfoWindow({
-              content: `
-                <div style="padding: 10px;">
-                  <h3 style="margin: 0 0 5px 0; font-size: 14px;">${feature.name}</h3>
-                  <p style="margin: 0; font-size: 12px; color: #666;">${feature.vicinity || 'Conservation area'}</p>
-                  <p style="margin: 5px 0 0 0; font-size: 11px; color: #888;">Type: ${feature.types?.[0] || 'Protected area'}</p>
-                </div>
-              `
-            });
-            
-            marker.addListener('click', () => {
-              infoWindow.open(map, marker);
-            });
-          }
-        });
-      }
-    } catch (error) {
-      console.error('Error loading conservation data:', error);
-    }
-  };
 
   const toggleConservationFilter = (filter: string) => {
     setConservationFilters(prev => {
@@ -257,66 +174,8 @@ export function ConservationModule() {
     
     setActiveAnalysis(filter);
     
-    if (mapInstance && isEEReady && window.ee) {
-      runConservationAnalysis(mapInstance, filter);
-    }
   };
 
-  const runConservationAnalysis = async (map: any, analysisType: string) => {
-    if (!window.ee || !map) return;
-
-    try {
-      let analysis: any, visualization: any;
-
-      switch (analysisType) {
-        case 'forest_loss':
-          // Hansen Global Forest Change
-          const gfc = window.ee.Image('UMD/hansen/global_forest_change_2022_v1_10');
-          const lossYear = gfc.select(['lossyear']);
-          const loss2020Plus = lossYear.gte(20); // Forest loss 2020 onwards
-          
-          analysis = loss2020Plus.updateMask(loss2020Plus);
-          visualization = { palette: ['red'] };
-          break;
-
-        case 'carbon_mapping':
-          // Biomass mapping for carbon estimation
-          const biomass = window.ee.ImageCollection('WCMC/biomass_carbon_density/v1_0')
-            .first();
-          
-          analysis = biomass.select('carbon_tonnes_per_ha');
-          visualization = {
-            min: 0, max: 300,
-            palette: ['yellow', 'orange', 'red', 'purple']
-          };
-          break;
-
-        case 'protected_areas':
-          // Protected areas overlay
-          const wdpa = window.ee.FeatureCollection('WCMC/WDPA/current/polygons');
-          analysis = window.ee.Image().paint(wdpa, 1);
-          visualization = { palette: ['green'] };
-          break;
-
-        case 'biodiversity':
-          // Species richness mapping
-          const species = window.ee.Image('RESOLVE/ECOREGIONS/2017')
-            .select('ECO_ID');
-          
-          analysis = species;
-          visualization = {
-            min: 0, max: 1000,
-            palette: ['lightblue', 'blue', 'darkblue', 'purple', 'red']
-          };
-          break;
-      }
-
-      mapService.addEarthEngineOverlay(map, mapProvider, analysis.getMap(visualization));
-
-    } catch (error) {
-      console.error('Conservation analysis error:', error);
-    }
-  };
 
   const analysisOptions = [
     { key: 'forest_loss', label: 'Forest Loss', description: 'Recent deforestation detection' },
@@ -479,9 +338,6 @@ export function ConservationModule() {
                         size="sm"
                         onClick={() => {
                           setActiveAnalysis(option.key);
-                          if (mapInstance && isEEReady) {
-                            runConservationAnalysis(mapInstance, option.key);
-                          }
                         }}
                         className="w-full justify-start text-xs"
                       >
@@ -510,8 +366,15 @@ export function ConservationModule() {
                     </div>
                   </div>
                 ) : (
-                  <div className="aspect-video rounded-lg overflow-hidden border">
-                    <div ref={mapRef} className="w-full h-full" style={{ minHeight: '400px' }} />
+                  <div className="aspect-video rounded-lg overflow-hidden border" style={{ minHeight: '400px' }}>
+                    <InteractiveMap 
+                      activeLayers={Object.keys(conservationFilters).filter(k => conservationFilters[k as keyof typeof conservationFilters])}
+                      initialViewState={{
+                        longitude: selectedCountry ? selectedCountry.coordinates.lng : 20,
+                        latitude: selectedCountry ? selectedCountry.coordinates.lat : 0,
+                        zoom: selectedCountry ? 6 : 4
+                      }}
+                    />
                   </div>
                 )}
               </CardContent>
